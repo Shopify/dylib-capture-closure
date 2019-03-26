@@ -44,6 +44,8 @@ module DylibCaptureClosure
       # -D: print shared library id name
       out, stat = Open3.capture2e('otool', '-L', '-D', object)
       raise(NotAnObject, '', []) if out =~ /Is a directory|is not an object file/
+      # *.a doesn't need relink but otool recognizes it and has different output
+      raise(NotAnObject, '', []) if out =~ /^Archive : /
       abort("otool -L failed:\n#{out}") unless stat.success?
 
       @object     = object

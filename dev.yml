@@ -1,0 +1,4 @@
+up:
+  - ruby: 2.6.0
+  - bundler
+test: ./test

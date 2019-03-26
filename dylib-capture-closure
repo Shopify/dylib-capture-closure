@@ -1,0 +1,149 @@
+#!/usr/bin/ruby --disable-gems
+
+require('fileutils')
+require('find')
+require('open3')
+
+module DylibCaptureClosure
+  extend(self)
+
+  LIB_CLOSURE = 'lib.closure'
+
+  def call(*argv)
+    unless argv.size == 2
+      abort("usage #{$PROGRAM_NAME} <STAGE> <PREFIX>")
+    end
+
+    stage, prefix = argv
+
+    FileUtils.mkdir_p(File.join(prefix, LIB_CLOSURE))
+    FileUtils.mkdir_p(File.join(stage, LIB_CLOSURE))
+
+    Find.find(stage).each do |file|
+      MachObject.relink_if_object(file, stage, prefix)
+    end
+  end
+
+  class MachObject
+    NotAnObject = Class.new(StandardError)
+
+    def self.relink_if_object(file, stage, prefix)
+      obj = nil
+      begin
+        obj = MachObject.new(file)
+      rescue MachObject::NotAnObject
+        return
+      end
+      obj.relink(stage, prefix)
+    end
+
+    attr_reader(:object, :library_id, :dylibs)
+
+    def initialize(object)
+      # -L: print shared libraries
+      # -D: print shared library id name
+      out, stat = Open3.capture2e('otool', '-L', '-D', object)
+      raise(NotAnObject, '', []) if out =~ /Is a directory|is not an object file/
+      abort("otool -L failed:\n#{out}") unless stat.success?
+
+      @object     = object
+      @library_id = nil
+      @dylibs     = []
+
+      # `out` looks something like this for an executable:
+      #
+      # nginx:
+      #         /usr/local/opt/luajit2/lib/libluajit-5.1.2.dylib (compatibility version 2.1.0, current version 2.1.0)
+      #         /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1252.200.5)
+      #
+      # ...or something like this for a shared library
+      #
+      #
+      # /usr/local/opt/openssl/lib/libcrypto.dylib:
+      #         /usr/local/opt/openssl/lib/libcrypto.1.0.0.dylib (compatibility version 1.0.0, current version 1.0.0)
+      #         /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1252.200.5)
+      # /usr/local/opt/openssl/lib/libcrypto.1.0.0.dylib
+      #
+      # First the shared library links are printed, prefixed by \t (-L), then the shared library ID,
+      # if relevant. The ID will also be present in the list of shared library links, but it will be
+      # self-referential.
+      lines = out.lines.map(&:chomp)
+      lines.shift # the first line is just the object name as passed to otool
+
+      if !lines.empty? && !lines.last.start_with?("\t")
+        # If the last line doesn't start with a tab, it's a library ID
+        @library_id = lines.pop
+      end
+
+      # ["/usr/local/opt/luajit2/lib/libluajit-5.1.2.dylib", "/usr/lib/libSystem.B.dylib"]
+      libs = lines.map { |line| line.scan(/^\t(.*\.dylib) /).flatten.first }
+      abort("unexpected format from otool for #{object}: #{out}") unless libs.all?
+
+      libs.delete(library_id) if library_id
+
+      # reject dylibs that already point inside the closure, and those that point to /usr/lib.
+      libs.reject! do |lib|
+        lib = File.expand_path(lib) # maybe unnecessary?
+        lib.start_with?('/usr/lib/')
+      end
+
+      @dylibs = libs
+    end
+
+    def relink(stage, prefix, inset: 0)
+      libs = dylibs.reject { |lib| directory_contains_file(prefix, lib) }
+      return if libs.empty?
+
+      info("relinking #{object}", inset: inset)
+
+      libs.each do |original_dylib_path|
+        basename = File.basename(original_dylib_path)
+        copy_target = File.join(stage, LIB_CLOSURE, basename)
+        link_target = File.join(prefix, LIB_CLOSURE, basename)
+
+        info("relinking #{basename} in #{object}", inset: inset)
+
+        unless File.exist?(copy_target)
+          puts("copying in #{original_dylib_path}")
+          FileUtils.cp(original_dylib_path, copy_target)
+        end
+
+        ensure_file_exists(link_target) do
+          _, stat = Open3.capture2('install_name_tool', '-change', original_dylib_path, link_target, object)
+          abort('install_name_tool -change failed') unless stat.success?
+        end
+
+        target_object = MachObject.new(copy_target)
+        target_object.change_library_id(link_target)
+        target_object.relink(stage, prefix, inset: inset + 2)
+      end
+    end
+
+    def change_library_id(target)
+      _, stat = Open3.capture2('install_name_tool', '-id', target, object)
+      abort('install_name_tool -id failed') unless stat.success?
+    end
+
+    private
+
+    def info(msg, inset:)
+      prefix = ' ' * inset
+      puts("#{prefix}#{msg}")
+    end
+
+    def directory_contains_file(dir, file)
+      File.expand_path(file).start_with?(File.expand_path(dir))
+    end
+
+    # install_name_tool won't change a reference unless the specified file exists.
+    def ensure_file_exists(file)
+      need_dummy = !File.exist?(file)
+      FileUtils.touch(file) if need_dummy
+      yield
+    ensure
+      File.unlink(file) if need_dummy
+    end
+  end
+end
+
+DylibCaptureClosure.call(*ARGV) if __FILE__ == $PROGRAM_NAME

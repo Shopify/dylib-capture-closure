@@ -1,0 +1,67 @@
+#!/usr/bin/env ruby
+
+require('bundler/setup')
+require('minitest/autorun')
+require('tmpdir')
+require('fileutils')
+require('find')
+load(File.expand_path('./dylib-capture-closure', __dir__))
+
+class DylibCaptureClosureTest < MiniTest::Test
+  def run(*)
+    Dir.mktmpdir do |source_dir|
+      @source_dir = File.realpath(source_dir)
+      FileUtils.cp_r(File.expand_path('fixtures', __dir__), @source_dir)
+      system('make', chdir: File.join(@source_dir, 'fixtures'))
+
+      Dir.mktmpdir do |dest_dir|
+        @dest_dir = File.realpath(dest_dir)
+        super
+      end
+    end
+  end
+
+  def test_a
+    FileUtils.mkdir("#{@dest_dir}/stage")
+    FileUtils.cp("#{@source_dir}/fixtures/c", "#{@dest_dir}/stage/c")
+
+    DylibCaptureClosure.call("#{@dest_dir}/stage", "/tmp/dylibcc-final")
+
+    act = Find.find(@dest_dir).to_a
+    exp = %W(
+      #{@dest_dir}
+      #{@dest_dir}/stage
+      #{@dest_dir}/stage/c
+      #{@dest_dir}/stage/lib.closure
+      #{@dest_dir}/stage/lib.closure/liba.dylib
+      #{@dest_dir}/stage/lib.closure/libb.dylib
+    )
+    assert_equal(exp, act)
+
+    ot = otool("#{@dest_dir}/stage/c")
+    assert_linked_library(ot, "/tmp/dylibcc-final/lib.closure/libb.dylib")
+
+    ot = otool("#{@dest_dir}/stage/lib.closure/liba.dylib")
+    assert_library_id(ot, "/tmp/dylibcc-final/lib.closure/liba.dylib")
+
+    ot = otool("#{@dest_dir}/stage/lib.closure/libb.dylib")
+    assert_linked_library(ot, "/tmp/dylibcc-final/lib.closure/liba.dylib")
+    assert_library_id(ot, "/tmp/dylibcc-final/lib.closure/libb.dylib")
+  end
+
+  private
+
+  def assert_linked_library(otool_output, libpath)
+    assert_includes(otool_output, "\t#{libpath} ")
+  end
+
+  def assert_library_id(otool_output, libpath)
+    assert_match(/^#{Regexp.quote(libpath)}\n\z/m, otool_output)
+  end
+
+  def otool(file)
+    out, stat = Open3.capture2e('otool', '-L', '-D', file)
+    abort("otool -L failed:\n#{out}") unless stat.success?
+    out
+  end
+end

@@ -40,10 +40,11 @@ module DylibCaptureClosure
     attr_reader(:object, :library_id, :dylibs)
 
     def initialize(object)
+      raise(NotAnObject, '', []) if File.directory?(object)
       # -L: print shared libraries
       # -D: print shared library id name
       out, stat = Open3.capture2e('otool', '-L', '-D', object)
-      raise(NotAnObject, '', []) if out =~ /Is a directory|is not an object file/
+      raise(NotAnObject, '', []) if out =~ /is not an object file/
       # *.a doesn't need relink but otool recognizes it and has different output
       raise(NotAnObject, '', []) if out =~ /^Archive : /
       raise(NotAnObject, '', []) if out =~ /No such file/ && File.symlink?(object)

@@ -88,7 +88,7 @@ module DylibCaptureClosure
       # reject dylibs that already point inside the closure, and those that point to /usr/lib.
       libs.reject! do |lib|
         lib = File.expand_path(lib) # maybe unnecessary?
-        lib.start_with?('/usr/lib/')
+        lib.start_with?('/usr/lib/') || lib.start_with?('@')
       end
 
       @dylibs = libs
@@ -119,13 +119,22 @@ module DylibCaptureClosure
 
         target_object = MachObject.new(copy_target)
         target_object.change_library_id(link_target)
+        target_object.change_codesign()
         target_object.relink(stage, prefix, inset: inset + 2)
       end
+
+      change_codesign()
+      
     end
 
     def change_library_id(target)
       _, stat = Open3.capture2('install_name_tool', '-id', target, object)
       abort('install_name_tool -id failed') unless stat.success?
+    end
+
+    def change_codesign()
+      _, stat = Open3.capture2('codesign', '-f', '-s', '-', object)
+      abort('codesign -f -s - failed') unless stat.success?
     end
 
     private

@@ -80,7 +80,9 @@ module DylibCaptureClosure
       end
 
       # ["/usr/local/opt/luajit2/lib/libluajit-5.1.2.dylib", "/usr/lib/libSystem.B.dylib"]
-      libs = lines.map { |line| line.scan(/^\t(.*\.dylib) /).flatten.first }
+      libs = lines
+        .reject { |f| f =~ %r{\t/System/} }
+        .map { |line| line.scan(/^\t(.*\.dylib) /).flatten.first }
       abort("unexpected format from otool for #{object}: #{out}") unless libs.all?
 
       libs.delete(library_id) if library_id

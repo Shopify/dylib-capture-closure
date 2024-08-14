@@ -90,7 +90,7 @@ module DylibCaptureClosure
       # reject dylibs that already point inside the closure, and those that point to /usr/lib.
       libs.reject! do |lib|
         lib = File.expand_path(lib) # maybe unnecessary?
-        lib.start_with?('/usr/lib/') || lib.start_with?('@')
+        lib.start_with?('/usr/lib/') || File.basename(lib) == File.basename(object) || lib.start_with?('@')
       end
 
       @dylibs = libs
@@ -126,7 +126,6 @@ module DylibCaptureClosure
       end
 
       change_codesign()
-      
     end
 
     def change_library_id(target)

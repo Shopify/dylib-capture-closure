@@ -87,6 +87,27 @@ module DylibCaptureClosure
 
       libs.delete(library_id) if library_id
 
+      previous_lib = nil
+      original_lib = libs.first
+      libs.map! do |lib|
+        if lib.start_with?('@rpath') || lib.start_with?('@loader_path')
+          lib_name = File.basename(lib)
+
+          previous_lib_dir = File.dirname(previous_lib)
+          original_lib_dir = File.dirname(original_lib)
+
+          if File.exist?(File.join(previous_lib_dir, lib_name))
+            lib = File.join(previous_lib_dir, lib_name)
+          elsif File.exist?(File.join(original_lib_dir, lib_name))
+            lib = File.join(original_lib_dir, lib_name)
+          else
+            print("could not find #{lib_name} in #{previous_lib_dir} or #{original_lib_dir}, just carry on")
+          end
+        end
+
+        previous_lib = lib
+      end
+
       # reject dylibs that already point inside the closure, and those that point to /usr/lib.
       libs.reject! do |lib|
         lib = File.expand_path(lib) # maybe unnecessary?

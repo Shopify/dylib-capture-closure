@@ -37,7 +37,7 @@ module DylibCaptureClosure
       obj.relink(stage, prefix)
     end
 
-    attr_reader(:object, :library_id, :dylibs)
+    attr_reader(:object, :library_id, :dylibs, :rpath)
 
     def initialize(object)
       raise(NotAnObject, '', []) if File.directory?(object)
@@ -53,6 +53,7 @@ module DylibCaptureClosure
       @object     = object
       @library_id = nil
       @dylibs     = []
+      @rpath      = nil
 
       # `out` looks something like this for an executable:
       #
@@ -90,6 +91,19 @@ module DylibCaptureClosure
       previous_lib = nil
       original_lib = libs.first
       libs.map! do |lib|
+        if lib.start_with?('@rpath') && rpath.nil?
+          l_out, stat = Open3.capture2e('otool', '-l', object)
+          abort("otool -l failed:\n#{out}") unless stat.success?
+
+          rpath_header_index = l_out.lines.index { |l| l =~ /LC_RPATH/ }
+          abort("can't find LC_RPATH for #{object}: #{out}") if rpath_header_index.nil?
+
+          rpath_line = l_out.lines[rpath_header_index..(rpath_header_index + 2)].find { |l| l =~ /path/ }
+          abort("can't find LC_RPATH path value for #{object}: #{out}") if rpath_line.nil?
+
+          @rpath = rpath_line.split(' ')[1]
+        end
+
         if lib.start_with?('@rpath') || lib.start_with?('@loader_path')
           lib_name = File.basename(lib)
 
@@ -146,12 +160,18 @@ module DylibCaptureClosure
         target_object.relink(stage, prefix, inset: inset + 2)
       end
 
+      change_rpath(File.join(prefix, LIB_CLOSURE)) unless rpath.nil?
       change_codesign()
     end
 
     def change_library_id(target)
       _, stat = Open3.capture2('install_name_tool', '-id', target, object)
       abort('install_name_tool -id failed') unless stat.success?
+    end
+
+    def change_rpath(target)
+      _, stat = Open3.capture2('install_name_tool', '-rpath', rpath, target, object)
+      abort('install_name_tool -rpath failed') unless stat.success?
     end
 
     def change_codesign()
